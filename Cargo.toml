@@ -1,0 +1,23 @@
+[package]
+name = "sudoku_rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+publish = false
+
+# for Windows
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+# Enable a small amount of optimization in the dev profile.
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+
+[dependencies]
+eframe = { version = "0.31.0", features = ["default", "__screenshot"] }
+egui_extras = { version = "0.31.0", features = ["default", "image"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
