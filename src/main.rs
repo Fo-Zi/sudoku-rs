@@ -3,20 +3,25 @@ use std::{cell::Cell, collections::HashMap};
 use eframe::egui;
 
 fn keys_with_duplicate_values<K: Eq + std::hash::Hash + Clone, V: Eq + std::hash::Hash>(
-    map: &HashMap<K, V>,
+    map: &HashMap<K, Option<V>>,
 ) -> Vec<K> {
     let mut value_counts: HashMap<&V, usize> = HashMap::new();
 
     // Count occurrences of each value
-    for value in map.values() {
-        *value_counts.entry(value).or_insert(0) += 1;
+    for option_value in map.values() {
+        if let Some(value) = option_value {
+            *value_counts.entry(value).or_insert(0) += 1;
+        }
     }
-
-    // Collect keys where the value appears more than once
+    
+    // Collect keys where Some(value) appears more than once
     map.iter()
-        .filter(|(_, value)| value_counts[value] > 1)
-        .map(|(key, _)| key.clone())
-        .collect()
+    .filter(|(_, value)| match value {
+        Some(v) => value_counts.get(&v).unwrap_or(&0) > &1, // Fix: use &v for lookup
+        None => false,
+    })
+    .map(|(key, _)| key.clone())
+    .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,6 +67,7 @@ struct SubGridMove {
     value: u8,
 }
 
+#[derive(Debug, PartialEq)]
 enum SubgridMoveResult {
     Ok,
     Invalid(Vec<PositionId>),
@@ -84,9 +90,14 @@ impl SubGrid {
         Self { cells: empty_cells }
     }
 
-    fn update_value(&mut self, key: PositionId, value: u8) {
-        if let Some(entry) = self.cells.get_mut(&key) {
-            *entry = Some(value); // Only updates existing keys
+    fn update_value(&mut self, key: PositionId, value: u8) -> Result< () , String> {
+        if value < 10 {
+            if let Some(entry) = self.cells.get_mut(&key) {
+                *entry = Some(value); // Only updates existing keys
+            }
+            Ok(())
+        }else{
+            Err("Invalid cell value".to_string())
         }
     }
 
@@ -104,10 +115,11 @@ impl SubGrid {
         }
     }
 
-    pub fn make_move(&self, sub_grid_move: SubGridMove) -> SubgridMoveResult {
+    pub fn make_move(&mut self, sub_grid_move: SubGridMove) -> SubgridMoveResult {
         let mut invalid_cells = Vec::new();
 
         if let Some(_entry) = self.cells.get(&sub_grid_move.cell) {
+            self.update_value(sub_grid_move.cell, sub_grid_move.value);
             if let Some(duplicates) = self.get_duplicates() {
                 invalid_cells.extend(duplicates);
             };
@@ -239,11 +251,11 @@ impl SudokuBoard {
     }
 
     //
-    fn make_move(&self, sudoku_move: &SudokuMove) -> SudokuMoveResult {
+    fn make_move(&mut self, sudoku_move: &SudokuMove) -> SudokuMoveResult {
         let mut invalid_cells_coordinates = Vec::new();
 
         // Adds all duplicate cells in the sub-grid where the move was attempted ->
-        if let Some(subgrid_entry) = self.sub_grids.get(&sudoku_move.cell_coordinate.sub_grid) {
+        if let Some(subgrid_entry) = self.sub_grids.get_mut(&sudoku_move.cell_coordinate.sub_grid) {
             if let SubgridMoveResult::Invalid(invalid_cells) =
                 subgrid_entry.make_move(SubGridMove {
                     cell: sudoku_move.cell_coordinate.cell,
@@ -314,6 +326,8 @@ fn main() -> Result<(), eframe::Error> {
  
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*; // Import functions from the parent module
 
     #[test]
@@ -400,6 +414,110 @@ mod tests {
             } 
         }
         assert_eq!(true, was_match_1_returned & was_match_2_returned);
+
+    }
+
+    #[test]
+    fn new_subgrid_returns_all_empty_cells() {
+        let empty_subgrid = SubGrid::new();
+        for cell in empty_subgrid.cells.iter() {
+            assert_eq!(None, *cell.1);
+        }
+    }
+
+    #[test]
+    fn update_cell_value_in_subgrid() {
+        let mut mut_subgrid = SubGrid::new();
+        let arbitrary_position = PositionId {  
+            row: Row::Center,
+            column: Column::Right
+        };
+        let arbitrary_value = 8_u8;
+        let _ = mut_subgrid.update_value(arbitrary_position, arbitrary_value);
+        assert_eq!(arbitrary_value, mut_subgrid.cells[&arbitrary_position].expect("Value just updated, shouldn't be None") );
+    }
+
+    #[test]
+    fn update_cell_in_subgrid_with_invalid_value_fails() {
+        let mut mut_subgrid = SubGrid::new();
+        let arbitrary_position = PositionId {  
+            row: Row::Center,
+            column: Column::Right
+        };
+        let arbitrary_invalid_value = 10_u8;
+        let ret_err = mut_subgrid.update_value(arbitrary_position, arbitrary_invalid_value);
+        assert!(matches!(ret_err,Err(_)));
+        assert_eq!(None, mut_subgrid.cells[&arbitrary_position]);
+    }
+    
+    #[test]
+    fn get_value_from_subgrid() {
+        let mut mut_subgrid = SubGrid::new();
+        let arbitrary_position = PositionId {  
+            row: Row::Center,
+            column: Column::Left
+        };
+        let arbitrary_empty_cell = PositionId {  
+            row: Row::Bottom,
+            column: Column::Center
+        };
+        let arbitrary_value = 6_u8;
+        let _ = mut_subgrid.update_value(arbitrary_position, arbitrary_value);
+        assert_eq!(arbitrary_value, mut_subgrid.get_value(arbitrary_position).expect("Value just updated, shouldn't be None"));
+        assert_eq!(None, mut_subgrid.get_value(arbitrary_empty_cell));
+    }
+
+    #[test]
+    fn make_no_duplicate_move_in_subgrid() {
+        let mut mut_subgrid = SubGrid::new();
+        let arbitrary_position = PositionId {  
+            row: Row::Center,
+            column: Column::Left
+        };
+        let arbitrary_value = 6_u8;
+        let sub_grid_move = SubGridMove { 
+            cell: arbitrary_position,
+            value: arbitrary_value
+        };
+
+        let move_result = mut_subgrid.make_move(sub_grid_move);
+        assert_eq!(SubgridMoveResult::Ok, move_result);
+        assert_eq!(arbitrary_value, mut_subgrid.get_value(arbitrary_position).expect("Value just updated, shouldn't be None"));
+    }
+
+    #[test]
+    fn make_duplicate_move_in_subgrid() {
+        let mut mut_subgrid = SubGrid::new();
+        let arbitrary_position = PositionId {  
+            row: Row::Center,
+            column: Column::Left
+        };
+        let arbitrary_value = 6_u8;
+        let sub_grid_move_1 = SubGridMove { 
+            cell: arbitrary_position,
+            value: arbitrary_value
+        };
+
+        let arbitrary_position_2 = PositionId {  
+            row: Row::Center,
+            column: Column::Right
+        };
+        let sub_grid_move_2 = SubGridMove { 
+            cell: arbitrary_position_2,
+            value: arbitrary_value
+        };
+
+        let _ = mut_subgrid.make_move(sub_grid_move_1);
+        let invalid_move = mut_subgrid.make_move(sub_grid_move_2);
+        
+        // Use pattern matching to extract the vector and compare
+        if let SubgridMoveResult::Invalid(positions) = invalid_move {
+            let expected_positions: HashSet<_> = vec![arbitrary_position,arbitrary_position_2 ].into_iter().collect();
+            let actual_positions: HashSet<_> = positions.into_iter().collect();
+            assert_eq!(expected_positions, actual_positions);
+        } else {
+            panic!("Expected SubgridMoveResult::Invalid, got {:?}", invalid_move);
+        }
 
     }
 
